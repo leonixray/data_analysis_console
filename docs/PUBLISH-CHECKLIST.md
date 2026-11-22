@@ -8,6 +8,7 @@
 - [x] `config/holdings.example.json`（示例数字，与任何人无关）+ `.gitignore`（屏蔽 `.env`、`config/holdings.json`、`*.db`）
 - [x] `README.md`（中文）、`LICENSE`（MIT）
 - [x] 缺 key 优雅降级已验证是现有行为（FRED 按系列报“密钥未配置”、BEA 报错被 `Promise.allSettled` 接住，其余模块照常刷新）
+- [x] 独立运行已实现：`standalone/`（Bun 服务端 + 客户端构建 + Dockerfile + docker-compose.yml），不依赖 Muse 运行时；`README.md` 有本地 / Docker 运行说明。Docker 镜像未在本机实际构建验证（本机无 Docker），见 `Dockerfile` 注释。
 
 ## 还需要你做的事
 
@@ -32,5 +33,5 @@
 ## 目前要注意的事
 
 - **内部构建文档已移除**：原始 `docs/DATA-PLAN.md` 是内部施工日志，里面有“用户持仓”“用户决定”这类与原作者个人相关的记录，已从公开仓库删掉，不再同步。代码注释里个别 “DATA-PLAN vXX” 只是版本号引用，不含个人信息。
-- **运行时依赖**：代码是 Muse TypeScript Space，服务端依赖 `@hatch/space-sdk`（Muse 运行时提供，不在 npm 上）。别人拿到仓库后最直接的用法是导入自己的 Muse；想脱离 Muse 独立跑，需要把动作层移植成普通 HTTP 服务——这项工作还没做，README 里已如实写明。
+- **运行时依赖**：代码是 Muse TypeScript Space，服务端依赖 `@hatch/space-sdk`（Muse 运行时提供，不在 npm 上）。别人拿到仓库后最直接的用法是导入自己的 Muse；想脱离 Muse 独立跑，用 `standalone/`（已实现：Bun 服务端 + 客户端构建 + Dockerfile + docker-compose.yml，见 README“方式二 / 方式三”）。
 - **快照版本**：本副本是 2026-11-22 的快照（约 v122–v123，板块前瞻 PE 模块当时还在合入）。线上管控台后续再有改动，公开仓库需要定期同步（重新脱敏复制或 `git pull` 式同步）。

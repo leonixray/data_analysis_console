@@ -1,0 +1,27 @@
+# 数据分析管控台 — Docker Compose。
+# 用法：cp .env.example .env（填 FRED/BEA key，可选），然后
+#   docker compose up -d --build
+# 打开 http://localhost:3000。
+#
+# 数据持久化：./data 挂到容器内 /data（app.db 在里面）。
+# 密钥：优先用仓库根的 .env（required: false，没有也能起，只是
+# FRED/BEA 相关卡片显示“密钥未配置”）；也可以改 environment 直接传。
+
+services:
+  console:
+    build: .
+    image: data-analysis-console:local
+    container_name: data-analysis-console
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: "3000"
+      DATABASE_PATH: /data/app.db
+      REFRESH_INTERVAL_MINUTES: "${REFRESH_INTERVAL_MINUTES:-60}"
+      REFRESH_ON_START: "${REFRESH_ON_START:-auto}"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

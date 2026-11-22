@@ -41,13 +41,53 @@ bun run typecheck    # 类型检查，应通过
 bun run build:server # 服务端打包检查，应产出 server/dist/actions.js
 ```
 
-> 注意：完整的客户端打包（`bun run build:client`）只能由 Muse 的 artifact 构建器完成，手工跑会被 SDK 拒绝——这是运行时的保护，不是代码问题。`bun run build` 在仓库外同样会在客户端那一步停下；正确流程是上面三步验证通过后，把源码导入 Muse 创建 Space，构建器会自动打包并发布。
+> 注意：完整的客户端打包（`bun run build:client`）只能由 Muse 的 artifact 构建器完成，手工跑会被 SDK 拒绝——这是运行时的保护，不是代码问题。`bun run build` 在仓库外同样会在客户端那一步停下；正确流程是上面三步验证通过后，把源码导入 Muse 创建 Space，构建器会自动打包并发布。想在 Muse 之外跑，见下面的方式二 / 方式三（`standalone/` 的构建可以打包客户端）。
 
 然后在 Muse 里创建 Space 并指向本仓库。运行时（`@hatch/space-sdk`）提供动作层、SQLite 数据库与定时任务；`drizzle/` 里的迁移会在首次启动时自动建表。启动后点一次「刷新数据」，种子数据会从各公开源拉取入库。
 
-### 方式二：独立运行（待移植）
+### 方式二：本机独立运行（macOS / Linux，不依赖 Muse）
 
-当前代码的服务端动作层依赖 Muse 的 Space 运行时（`@hatch/space-sdk`：`defineAction`、`Ctx.db`、`ctx.executePrivileged`、定时任务）。**脱离该运行时不能直接跑**。独立运行需要把动作层移植成普通 HTTP 服务（例如 Bun + `bun:sqlite` + drizzle + `node-cron`），这项工作尚未做，欢迎提 PR。移植时唯一要改的是动作层与数据库绑定，取数逻辑与前端都不用动。
+`standalone/` 是不依赖 Muse 运行时的独立入口：同一个塔代码（`server/src/*`、`client/src/*` 原样不动），`@hatch/space-sdk` 由 `standalone/shims/` 里的最小兼容层替代，`POST /actions` 由 `standalone/src/server.ts` 直接分发。需要 Bun ≥ 1.2（服务端用 `bun:sqlite`）。
+
+```bash
+cd standalone
+bun install   # 装依赖；postinstall 会在仓库根建一个 node_modules 软链（供 Tailwind 编译用，不进仓库）
+bun run start # 先构建客户端 + 服务端包，再起服务；默认 http://localhost:3000
+```
+
+首次启动数据库是空的：服务会自动在后台跑一次全量回填（约 2 分钟，拉约 20 年历史），之后每小时自动刷新一次（`REFRESH_INTERVAL_MINUTES`，`0` 关闭）；页面右上角「刷新数据」仍可手动刷新。启动日志会写数据库路径、刷新间隔与回填进度。
+
+环境变量（也可写进仓库根的 `.env`，见 `.env.example`）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PORT` | `3000` | 监听端口 |
+| `HOST` | `0.0.0.0` | 监听地址 |
+| `DATABASE_PATH` | `data/app.db` | SQLite 路径（相对仓库根；不存在自动建表） |
+| `REFRESH_INTERVAL_MINUTES` | `60` | 定时刷新间隔分钟数，`0` 关闭 |
+| `REFRESH_ON_START` | `auto` | `auto`：库空时启动后回填；`always`：每次启动都回填；`never`：不回填 |
+
+数据持久化：数据库就是 `DATABASE_PATH` 那个文件，拷走即备份；删库重起会重新全量回填。
+
+### 方式三：Docker 运行
+
+```bash
+cp .env.example .env   # 可选：填 FRED/BEA key；不填也能跑，只是相关卡片显示“密钥未配置”
+docker compose up -d --build
+# 打开 http://localhost:3000
+```
+
+`docker-compose.yml` 把 `./data` 挂到容器内 `/data`（`DATABASE_PATH=/data/app.db`），密钥走 `.env` 注入。镜像分两段构建：`oven/bun:1` 构建阶段装依赖、产出客户端与服务端包；运行阶段只留运行时需要的文件（服务端包、客户端静态文件、drizzle 迁移）。`.env` 与 `*.db` 不进镜像（见 `.dockerignore`）。
+
+也可以只用 Dockerfile：`docker build -t data-analysis-console .`，再 `docker run -p 3000:3000 -v ./data:/data data-analysis-console`。
+
+#### 与 Muse 版的差异
+
+- **定时刷新**：Muse 版是 18 个托管 cron（07:00–24:00 每小时）；独立版是进程内定时器（默认每小时）+ 页面手动刷新，行为等价。
+- **特权处理**：Muse 版把 FINRA xlsx 的下载解压放在特权宿主里；独立版在同一进程内直接跑（纯 `node:zlib` + fetch 代码，无额外依赖）。
+- **无跨端广播**：Muse 版动作写库后会推所有打开的页面刷新；独立版没有这个推送，各浏览器标签按自己的 staleTime（30 秒）重新拉取。
+- **无 agent / 推理 / 工具调用**：塔本身不用这些（动作只用 `ctx.db`、`ctx.executePrivileged`、`ctx.invalidateQueries`），独立版里调用它们会直接报错。
+- **健康检查**：独立版多一个 `GET /healthz`（`{ok, series, uptimeSec}`）。
 
 ## 配置 Token
 
@@ -91,10 +131,10 @@ cp .env.example .env   # 填入上面两个 key
 
 ## 已知限制
 
-- 必须跑在 Muse Space 运行时里才能直接用（见“方式二”）。
 - CNN 恐惧与贪婪只有 1 年历史；AAII 情绪、成分股宽度没有公开可拉的 API，目前显示“暂无数据”。
 - 前瞻 PE（指数与板块）目前是每周手工抄录，不是全自动。
 - 部分境外接口在部分地区网络下可能被拦截，刷新失败会在刷新日志里写明原因并可重试。
+- 独立运行（`standalone/`）需要 Bun ≥ 1.2；Docker 镜像在本仓库 CI 外没有实际构建验证，见 `Dockerfile` 注释。
 
 ## 许可证
 

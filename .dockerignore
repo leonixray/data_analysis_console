@@ -1,0 +1,23 @@
+# 绝不进镜像的东西：密钥、数据库、本地构建产物、内部记录。
+.git
+node_modules
+standalone/node_modules
+standalone/dist
+standalone/dist-server
+client/dist
+client/dist-cvm
+server/dist
+data
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.local
+.bun-cache
+.space-build
+.space-build-cvm
+audits
+.harness
+hidden_files
+DATA-PLAN.md
+docs/DATA-PLAN.md
