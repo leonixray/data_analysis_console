@@ -153,6 +153,24 @@ export const serverSecrets = sqliteTable("server_secrets", {
   updatedAt: text("updated_at").notNull().default(""),
 });
 
+// AI 硬件现货模块的新闻区 (v124): storage / spot-market headlines
+// collected by the ai-hardware stage from TrendForce's official news
+// listing (title-keyword filtered to memory / spot topics), one row
+// per article URL. The page only reads this table; the stage prunes
+// it to the newest ~60 rows.
+export const aiNews = sqliteTable(
+  "ai_news",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    url: text("url").notNull(),
+    title: text("title").notNull(),
+    source: text("source").notNull().default(""), // e.g. "TrendForce"
+    publishedDate: text("published_date").notNull().default(""), // YYYY-MM-DD as printed by the source
+    fetchedAt: text("fetched_at").notNull().default(""),
+  },
+  (t) => [uniqueIndex("ai_news_url").on(t.url)],
+);
+
 export const refreshLog = sqliteTable("refresh_log", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   finishedAt: integer("finished_at", { mode: "timestamp_ms" })

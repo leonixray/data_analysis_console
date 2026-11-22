@@ -34,6 +34,7 @@ standalone/dist-server/
 .space-build/
 .space-build-cvm/
 *.tsbuildinfo
+.tsbuildinfo*
 
 # 系统与编辑器
 .DS_Store

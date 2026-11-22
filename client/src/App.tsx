@@ -14,7 +14,7 @@ type Fib = Dashboard["fibs"][number];
 type Indicator = Dashboard["derived"][number];
 type Stats = NonNullable<Indicator["stats"]>;
 
-type View = "overview" | "cloud" | "chronicle" | "bonds" | "us" | "ussec" | "usdiv" | "cn" | "cnsec" | "hk" | "gold" | "macro" | "wallst" | "portfolio" | "calendar" | "history" | "signals" | "bottomtop" | "methods";
+type View = "overview" | "cloud" | "chronicle" | "bonds" | "us" | "ussec" | "usdiv" | "cn" | "cnsec" | "hk" | "gold" | "macro" | "wallst" | "portfolio" | "calendar" | "history" | "signals" | "bottomtop" | "aihw" | "methods";
 type BondTab = "rate" | "credit" | "money";
 
 // ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ const WindowCtx = createContext<{ days: number; label: string }>({ days: 500, la
 // 窗口切换器（在这些页上切换窗口对页面内容毫无作用，只会白白重拉
 // 一遍 getDashboard）。其余页面（总览与各图表模块页）的图表与百分位
 // 都由同一个 windowDays 驱动，切换器只在那些页出现。
-const WINDOWLESS_VIEWS: View[] = ["cloud", "chronicle", "calendar", "methods"];
+const WINDOWLESS_VIEWS: View[] = ["cloud", "chronicle", "calendar", "methods", "aihw"];
 
 function useWindowLabel(): string {
   return useContext(WindowCtx).label;
@@ -3071,6 +3071,206 @@ function BottomTopView({ data }: { data: Dashboard }) {
   );
 }
 
+type AiHw = Dashboard["aiHardware"];
+type AiSpotRow = AiHw["spots"][number];
+type AiGpuRow = AiHw["gpus"][number];
+
+/** Lazily-fetched line for the AI-hardware cards: the numbers render
+ *  from the dashboard payload; the chart is fetched per series only
+ *  when the card nears the viewport (same pattern as InstrumentCard).
+ *  These series are daily snapshots, so under 2 points no line can be
+ *  drawn yet — the placeholder says how many snapshots exist. */
+function AiHwCardChart({ seriesKey, points }: { seriesKey: string; points: number }) {
+  const { ref, near } = useNearViewport<HTMLDivElement>();
+  const chartQ = useQuery({
+    queryKey: ["chart", seriesKey, 500],
+    queryFn: () => api.getInstrumentChart({ key: seriesKey, windowDays: 500 }),
+    enabled: near,
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const chart = chartQ.data?.chart ?? [];
+  return (
+    <div ref={ref} className="mt-3">
+      {chart.length >= 2 ? (
+        <>
+          <MiniChart data={chart} color="var(--accent)" />
+          <div className="mt-1 flex justify-between text-[11px] text-[var(--dim)]">
+            <span>
+              {chart[0]?.d} 至 {chart[chart.length - 1]?.d}
+            </span>
+            <span>{chart.length} 个快照</span>
+          </div>
+        </>
+      ) : (
+        <div
+          className="flex h-[120px] w-full items-center justify-center px-3 text-center text-[11px] leading-relaxed text-[var(--dim)]"
+          aria-hidden
+        >
+          {chartQ.isError ? "走势图读取失败" : points >= 2 ? "走势图加载中…" : `已积累 ${points} 个每日快照，满 2 个点后开始画线`}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AiAccumChip({ points }: { points: number }) {
+  return points < 8 ? (
+    <span className="inline-block rounded-full bg-[var(--border)]/60 px-2 py-0.5 text-[11px] text-[var(--dim)]">积累中 {points}/8</span>
+  ) : (
+    <span className="inline-block rounded-full bg-[var(--border)]/60 px-2 py-0.5 text-[11px] text-[var(--dim)]">已积累 {points} 个快照</span>
+  );
+}
+
+function AiSpotCard({ spot }: { spot: AiSpotRow }) {
+  return (
+    <article className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="font-serif-sc text-lg font-bold text-[var(--text)]">{spot.name}</h3>
+          <div className="text-xs text-[var(--dim)]">{spot.spec}</div>
+        </div>
+        <div className="text-right">
+          <div className="font-serif-sc text-2xl font-bold leading-none text-[var(--text)]">
+            {spot.value != null ? `$${fmt(spot.value, 2)}` : "暂无数据"}
+            {spot.value != null ? <span className="ml-1 text-xs font-normal text-[var(--dim)]">{spot.unit}</span> : null}
+          </div>
+          <div className={`mt-1 text-sm font-medium ${spot.changePct != null ? moveColor(spot.changePct) : "text-[var(--dim)]"}`}>
+            {spot.changePct != null ? (
+              <>
+                {signed(spot.changePct, 2)}% <span className="font-normal text-[var(--dim)]">· 较上一快照</span>
+              </>
+            ) : (
+              "—"
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        <AiAccumChip points={spot.points} />
+        <span className="inline-block rounded-full bg-[var(--border)]/60 px-2 py-0.5 text-[11px] text-[var(--dim)]">
+          {spot.reportedDate ? `报价日 ${spot.reportedDate}` : spot.date ? `抓取日 ${spot.date}` : "尚未抓取"}
+        </span>
+        {spot.reportedDate && spot.date ? (
+          <span className="inline-block rounded-full bg-[var(--border)]/60 px-2 py-0.5 text-[11px] text-[var(--dim)]">快照日 {spot.date}</span>
+        ) : null}
+      </div>
+      <AiHwCardChart seriesKey={spot.key} points={spot.points} />
+      <p className="mt-2 text-[11px] leading-relaxed text-[var(--dim)]">来源：memoryindex.io（转载 DRAMeXchange · TrendForce 现货板）</p>
+    </article>
+  );
+}
+
+function AiGpuCard({ gpu }: { gpu: AiGpuRow }) {
+  return (
+    <article className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="font-serif-sc text-lg font-bold text-[var(--text)]">{gpu.name}</h3>
+          <div className="text-xs text-[var(--dim)]">{gpu.spec}</div>
+        </div>
+        <div className="text-right">
+          <div className="font-serif-sc text-2xl font-bold leading-none text-[var(--text)]">
+            {gpu.value != null ? `$${fmt(gpu.value, 2)}` : "暂无数据"}
+            {gpu.value != null ? <span className="ml-1 text-xs font-normal text-[var(--dim)]">{gpu.unit}</span> : null}
+          </div>
+          <div className={`mt-1 text-sm font-medium ${gpu.changePct != null ? moveColor(gpu.changePct) : "text-[var(--dim)]"}`}>
+            {gpu.changePct != null ? (
+              <>
+                {signed(gpu.changePct, 2)}% <span className="font-normal text-[var(--dim)]">· 较上一快照</span>
+              </>
+            ) : (
+              "—"
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        <AiAccumChip points={gpu.points} />
+        {gpu.date ? (
+          <span className="inline-block rounded-full bg-[var(--border)]/60 px-2 py-0.5 text-[11px] text-[var(--dim)]">快照日 {gpu.date}</span>
+        ) : null}
+      </div>
+      <AiHwCardChart seriesKey={gpu.key} points={gpu.points} />
+      <p className="mt-2 text-[11px] leading-relaxed text-[var(--dim)]">
+        口径：NowInStock.net 追踪的美国零售报价中、当前在售（In Stock）报价的最低值
+        {gpu.offers != null ? `（最新快照共 ${gpu.offers} 条在售报价${gpu.retailer ? `，最低来自 ${gpu.retailer}` : ""}）` : ""}；街价因渠道而异。
+      </p>
+      <p className="mt-1 text-[11px] leading-relaxed text-[var(--dim)]">来源：NowInStock.net（追踪 Newegg、Amazon、B&amp;H 等美国零售商报价）</p>
+    </article>
+  );
+}
+
+function AiHbmCard({ h }: { h: AiHw["hbm"][number] }) {
+  return (
+    <article className="rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="font-serif-sc text-lg font-bold text-[var(--text)]">{h.name}</h3>
+          <div className="text-xs text-[var(--dim)]">{h.spec}</div>
+        </div>
+        <span className="inline-block rounded-full bg-[var(--gold)]/15 px-2 py-0.5 text-[11px] font-medium leading-tight text-[var(--gold)]">{h.kind}</span>
+      </div>
+      <div className="mt-2 font-serif-sc text-2xl font-bold leading-none text-[var(--text)]">{h.priceText}</div>
+      <div className="mt-1 text-xs text-[var(--dim)]">{h.dateText}</div>
+      <p className="mt-2 text-sm leading-relaxed text-[var(--text)]">{h.note}</p>
+      <p className="mt-2 text-[11px] leading-relaxed text-[var(--dim)]">来源：{h.source}</p>
+    </article>
+  );
+}
+
+function AiHardwareView({ data }: { data: Dashboard }) {
+  const ai = data.aiHardware;
+  return (
+    <section>
+      <SectionHead title="AI 硬件现货价格" />
+      <h3 className="mt-5 text-base font-bold text-[var(--text)]">存储现货 · 每日快照</h3>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        {ai.spots.map((s) => (
+          <AiSpotCard key={s.key} spot={s} />
+        ))}
+      </div>
+      <h3 className="mt-7 text-base font-bold text-[var(--text)]">显卡街价 · RTX 50 系</h3>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        {ai.gpus.map((g) => (
+          <AiGpuCard key={g.key} gpu={g} />
+        ))}
+      </div>
+      <h3 className="mt-7 text-base font-bold text-[var(--text)]">HBM · 参考价位</h3>
+      <p className="mt-1.5 text-sm leading-relaxed text-[var(--dim)]">
+        HBM 无公开现货市场，按跨季度配额合约成交；以下为公开报道的参考价位，口径各不相同，不连成一条线。
+      </p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        {ai.hbm.map((h, i) => (
+          <AiHbmCard key={`${h.name}-${h.kind}-${i}`} h={h} />
+        ))}
+      </div>
+      <h3 className="mt-7 text-base font-bold text-[var(--text)]">存储 / 现货新闻</h3>
+      {ai.news.length > 0 ? (
+        <ul className="mt-3 divide-y divide-[var(--border)] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--surface)] px-4 shadow-[var(--shadow-card)]">
+          {ai.news.map((n) => (
+            <li key={n.url} className="py-3">
+              <a
+                href={n.url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sm font-medium leading-relaxed text-[var(--text)] underline decoration-[var(--border)] underline-offset-2 hover:decoration-[var(--accent)]"
+              >
+                {n.title}
+              </a>
+              <div className="mt-0.5 text-[11px] text-[var(--dim)]">
+                {n.source} · {n.date}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-3 text-sm text-[var(--dim)]">暂无新闻，刷新后从 TrendForce 官方新闻列表收集存储 / 现货相关条目。</p>
+      )}
+    </section>
+  );
+}
+
 function HistoryView({ data, goMethod }: { data: Dashboard; goMethod: (id: string) => void }) {
   const rows = [...data.drawdowns].sort((a, b) => a.currentDd - b.currentDd);
   return (
@@ -5152,6 +5352,7 @@ const NAV: { id: View; label: string }[] = [
   { id: "history", label: "历史回撤" },
   { id: "signals", label: "决策信号" },
   { id: "bottomtop", label: "抄底逃顶" },
+  { id: "aihw", label: "AI硬件现货" },
   { id: "methods", label: "方法库" },
 ];
 
@@ -5162,7 +5363,7 @@ const NAV: { id: View; label: string }[] = [
 // 单独重试失败块。进页面只读已入库的缓存，不触发任何外部拉取。
 // ---------------------------------------------------------------------------
 
-type RefreshStageId = "prices" | "yields" | "extras" | "margin" | "feargreed" | "pcr" | "pe" | "money" | "wallst" | "calendar" | "cloud-us" | "cloud-ndx" | "cloud-dow" | "cloud-rut" | "cloud-cn" | "chronicle";
+type RefreshStageId = "prices" | "yields" | "extras" | "margin" | "feargreed" | "pcr" | "pe" | "money" | "wallst" | "calendar" | "cloud-us" | "cloud-ndx" | "cloud-dow" | "cloud-rut" | "cloud-cn" | "chronicle" | "ai-hardware";
 
 const REFRESH_STAGES: { id: RefreshStageId; label: string }[] = [
   { id: "prices", label: "行情与历史序列" },
@@ -5181,6 +5382,7 @@ const REFRESH_STAGES: { id: RefreshStageId; label: string }[] = [
   { id: "cloud-rut", label: "云图 · 罗素 2000" },
   { id: "cloud-cn", label: "云图 · A股" },
   { id: "chronicle", label: "美股编年史" },
+  { id: "ai-hardware", label: "AI 硬件现货价格" },
 ];
 
 type StageState = "pending" | "running" | "ok" | "partial" | "error" | "skipped";
@@ -5236,6 +5438,7 @@ const FRESH_BY_VIEW: Partial<Record<View, [string, string][]>> = {
     ["华尔街宏观（HY 利差）", "wallst"],
     ["保证金负债（FINRA）", "margin"],
   ],
+  aihw: [["AI 硬件现货", "ai-hardware"]],
 };
 type RefreshRun = {
   states: Partial<Record<RefreshStageId, StageState>>;
@@ -5477,7 +5680,7 @@ export function App() {
       if (stage.id === "cloud-us" || stage.id === "cloud-ndx" || stage.id === "cloud-dow" || stage.id === "cloud-rut" || stage.id === "cloud-cn") {
         await queryClient.invalidateQueries({ queryKey: ["cloud"] });
       }
-      if (stage.id === "prices") {
+      if (stage.id === "prices" || stage.id === "ai-hardware") {
         await queryClient.invalidateQueries({ queryKey: ["chart"] });
       }
       if (stage.id === "chronicle") {
@@ -5647,6 +5850,16 @@ export function App() {
             data.bottomTop?.composite != null
               ? `综合指数 ${data.bottomTop.composite > 0 ? "+" : ""}${data.bottomTop.composite} · ${data.bottomTop.zone === "bottom" ? "抄底区" : data.bottomTop.zone === "top" ? "逃顶区" : "中性"}`
               : "暂无数据",
+        },
+        {
+          id: "aihw",
+          title: "AI硬件现货价格",
+          stat: (() => {
+            const d5 = data.aiHardware.spots.find((s) => s.key === "dram_ddr5_16g");
+            return d5?.value != null
+              ? `DDR5 16Gb 现货 $${fmt(d5.value, 2)}（${d5.reportedDate || d5.date}）`
+              : `现货积累中 ${d5?.points ?? 0}/8`;
+          })(),
         },
         {
           id: "methods",
@@ -6546,6 +6759,8 @@ export function App() {
             {view === "signals" ? <SignalsView data={data} /> : null}
 
             {view === "bottomtop" ? <BottomTopView data={data} /> : null}
+
+            {view === "aihw" ? <AiHardwareView data={data} /> : null}
 
             {view === "methods" ? <MethodLibrary /> : null}
 

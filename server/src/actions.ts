@@ -6242,6 +6242,63 @@ const dashboardResponse = z.object({
       entries: z.array(z.object({ date: z.string(), zone: z.enum(["bottom", "top"]) })),
     })
     .nullable(),
+  // AI 硬件现货 (v124, 2026-11-22): latest stored snapshot per spot
+  // series (value / Beijing snapshot date / the board row's own quote
+  // date / change vs the previous snapshot / sample count — samples
+  // < 8 render 积累中 on the page and carry no percentile), the RTX 50
+  // street-price snapshots (cheapest in-stock offer per model, with
+  // the offer count + cheapest retailer from the latest snapshot),
+  // the static HBM reference points (no public spot market — cards
+  // only, never a line), and the stored TrendForce storage/spot news.
+  // No stock prices in this module — spot prices and street prices only.
+  aiHardware: z.object({
+    spots: z.array(
+      z.object({
+        key: z.string(),
+        name: z.string(),
+        spec: z.string(),
+        unit: z.string(),
+        value: z.number().nullable(),
+        date: z.string(),
+        reportedDate: z.string(),
+        changePct: z.number().nullable(),
+        points: z.number(),
+      }),
+    ),
+    gpus: z.array(
+      z.object({
+        key: z.string(),
+        name: z.string(),
+        spec: z.string(),
+        unit: z.string(),
+        value: z.number().nullable(),
+        date: z.string(),
+        changePct: z.number().nullable(),
+        points: z.number(),
+        offers: z.number().nullable(),
+        retailer: z.string(),
+      }),
+    ),
+    hbm: z.array(
+      z.object({
+        name: z.string(),
+        spec: z.string(),
+        priceText: z.string(),
+        dateText: z.string(),
+        kind: z.string(),
+        note: z.string(),
+        source: z.string(),
+      }),
+    ),
+    news: z.array(
+      z.object({
+        title: z.string(),
+        url: z.string(),
+        date: z.string(),
+        source: z.string(),
+      }),
+    ),
+  }),
   style: z.array(indicatorZ),
   seasonality: z.array(
     z.object({
@@ -8006,6 +8063,357 @@ async function stageChronicle(ctx: Ctx, rebuild: boolean): Promise<StageResult> 
   }
 }
 
+// ---------------------------------------------------------------------------
+// AI 硬件现货 (v124, 2026-11-22): DRAM / NAND spot snapshots, RTX 50
+// series street prices, and storage / spot-market news, all refreshed
+// by the ai-hardware stage. (Scope: NO stock-price
+// series in this module — the prices stage's NVDA / MU / AVGO cards
+// live on the 美股 page and are not duplicated here.)
+//
+// Spot source: memoryindex.io's /memory-prices page (SSR HTML), which
+// republishes the DRAMeXchange · TrendForce spot board. Verified live
+// 2026-11-22: DDR5 16Gb $60.92 (board quote date 2026-11-02), DDR4 8Gb
+// $45.89 (2026-11-03), DDR4 16Gb $81.61 (2026-11-02), NAND 3D TLC 512Gb
+// $16.29, NAND 3D TLC 1Tb $17.78. Parse traps (measured): "DDR5-16G" is
+// a substring of "LPDDR5-16G", so the price regex is anchored on the
+// ">CODE</span>" left boundary; every parsed price must also fall
+// inside a sane range or the point is dropped (never stored). The
+// site's own history curves are reverse-engineered composites and are
+// NEVER backfilled — spot series accumulate one snapshot per Beijing
+// day from launch, and the card says 积累中 until 8 points exist. The
+// point's date is the Beijing fetch day; the board row's own quote
+// date (reported · YYYY-MM-DD, when the row carries one) is kept in
+// the _aihw_spot_meta KV for display only.
+//
+// GPU street prices: NowInStock.net's per-model tracker pages
+// (verified live 2026-11-22; Newegg / Amazon / Best Buy / Walmart /
+// PCPartPicker direct pages are all bot-walled from this egress, and
+// NVIDIA's own page renders prices client-side only). Caliber, stated
+// on every card: the LOWEST price among the offers the tracker marks
+// In Stock with a listed price — the cheapest way to actually buy the
+// card that day. A model with no in-stock priced offer stores NO
+// point that day (never a stale or out-of-stock price dressed up as
+// current). Verified 2026-11-22: 5090 min $6,449.99 (12 offers), 5080
+// $2,199.99 (7), 5070 Ti $1,439.99 (4), 5070 $899.99 (6), 5060 Ti
+// $519.99 (21), 5060 $459.99 (14) — all Newegg that day. Datacenter
+// cards (H100 / B200 …) are deliberately absent: the only public
+// numbers are channel-reported estimates (memoryindex.io /gpu-prices
+// labels them "estimate", dated 2026-07/10), not verifiable quotes.
+//
+// News: TrendForce's official news listing (www.trendforce.com/news +
+// /page/2..4/), title-keyword filtered to memory / spot topics
+// (DRAM / NAND / HBM / GDDR / DDR / Memory / SSD / Flash / spot
+// price), stored in ai_news with source + published date; the page
+// reads the table only. DRAMeXchange's own site is unreachable from
+// this egress (connection fails), and TrendForce is its parent
+// research house — the spot board above is the DRAMeXchange board.
+//
+// HBM has NO public spot market (it trades on multi-quarter allocation
+// contracts), so there is no HBM spot series and no HBM line chart —
+// only the static reference points below, each with its own caliber
+// and source; different calibers are never joined into a line.
+// ---------------------------------------------------------------------------
+
+/** RTX 50 series street-price trackers. min/max are parse-sanity
+ *  bounds (a parsed "price" outside them is garbage, never stored). */
+const AI_HW_GPUS: { key: string; slug: string; name: string; spec: string; min: number; max: number }[] = [
+  { key: "gpu_rtx5090", slug: "rtx5090", name: "RTX 5090", spec: "GeForce RTX 5090 · 32GB GDDR7", min: 500, max: 20000 },
+  { key: "gpu_rtx5080", slug: "rtx5080", name: "RTX 5080", spec: "GeForce RTX 5080 · 16GB GDDR7", min: 300, max: 10000 },
+  { key: "gpu_rtx5070ti", slug: "rtx5070ti", name: "RTX 5070 Ti", spec: "GeForce RTX 5070 Ti · 16GB GDDR7", min: 250, max: 8000 },
+  { key: "gpu_rtx5070", slug: "rtx5070", name: "RTX 5070", spec: "GeForce RTX 5070 · 12GB GDDR7", min: 200, max: 6000 },
+  { key: "gpu_rtx5060ti", slug: "rtx5060ti", name: "RTX 5060 Ti", spec: "GeForce RTX 5060 Ti · 16GB / 8GB GDDR7", min: 150, max: 4000 },
+  { key: "gpu_rtx5060", slug: "rtx5060", name: "RTX 5060", spec: "GeForce RTX 5060 · 8GB GDDR7", min: 100, max: 3000 },
+];
+
+const AI_HW_SPOTS: { key: string; code: string; name: string; spec: string; unit: string; min: number; max: number }[] = [
+  { key: "dram_ddr5_16g", code: "DDR5-16G", name: "DRAM · DDR5 16Gb", spec: "DDR5 16Gb (2Gx8) 4800/5600 颗粒现货价", unit: "美元/颗", min: 1, max: 500 },
+  { key: "dram_ddr4_8g", code: "DDR4-8G", name: "DRAM · DDR4 8Gb", spec: "DDR4 8Gb (1Gx8) 3200 颗粒现货价", unit: "美元/颗", min: 1, max: 500 },
+  { key: "dram_ddr4_16g", code: "DDR4-16G", name: "DRAM · DDR4 16Gb", spec: "DDR4 16Gb (2Gx8) 3200 颗粒现货价", unit: "美元/颗", min: 1, max: 500 },
+  { key: "nand_tlc_512g", code: "NAND-TLC-512G", name: "NAND · 3D TLC 512Gb", spec: "3D TLC NAND 512Gb 晶粒价格", unit: "美元/颗", min: 0.2, max: 200 },
+  { key: "nand_tlc_1t", code: "NAND-TLC-1T", name: "NAND · 3D TLC 1Tb", spec: "3D TLC NAND 1Tb 晶粒价格", unit: "美元/颗", min: 0.2, max: 200 },
+];
+
+/** HBM reference points (static, verified 2026-11-22 — see DATA-PLAN
+ *  v124). NOT a series: no refresh writes these, and the page renders
+ *  them as cards, never as a connected line. */
+const AI_HW_HBM_REFS: { name: string; spec: string; priceText: string; dateText: string; kind: string; note: string; source: string }[] = [
+  {
+    name: "HBM3",
+    spec: "24GB 12-Hi 堆栈",
+    priceText: "$200",
+    dateText: "2026-07",
+    kind: "参考价位",
+    note: "第三方汇总的参考价位，不是现货成交价",
+    source: "Silicon Analysts（经 memoryindex.io 汇总）",
+  },
+  {
+    name: "HBM3E",
+    spec: "36GB 12-Hi 堆栈",
+    priceText: "$2,107.00",
+    dateText: "2026-09-01",
+    kind: "稀缺批次现货价",
+    note: "稀缺批次的现货报价，约为长期协议价的 4–5 倍",
+    source: "TrendForce 援引《首尔经济日报》现货市场报道（经 memoryindex.io）",
+  },
+  {
+    name: "HBM4",
+    spec: "48GB 16-Hi 堆栈",
+    priceText: "$3,515 / 堆栈",
+    dateText: "2026-09-01",
+    kind: "现货指示价",
+    note: "稀缺产品的现货指示价，不是已结算的合同价",
+    source: "TrendForce 援引《首尔经济日报》（经 memoryindex.io）",
+  },
+  {
+    name: "HBM4",
+    spec: "CY2027 供应预期",
+    priceText: "约 $1,300",
+    dateText: "2026-10（预测）",
+    kind: "预期合同价 · 预测",
+    note: "CY2027 供应预期合同价，与上面的现货指示价口径不同，不可直接对比",
+    source: "CY2027 供应预期合同价预测（2026-10 公布）",
+  },
+];
+
+function beijingToday(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** One pass over the memoryindex.io spot board: per tracked row, the
+ *  current price (ticker strip, left-boundary anchored) and the detail
+ *  row's own quote date when it carries one. A row that fails to parse
+ *  or lands outside its sane range is simply absent from the result —
+ *  the caller records an error for it and stores nothing. */
+async function fetchMemorySpotBoard(): Promise<Map<string, { price: number; reportedDate: string }>> {
+  const res = await fetch("https://memoryindex.io/memory-prices", {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) throw new Error(`memoryindex.io HTTP ${res.status}`);
+  const html = await res.text();
+  const out = new Map<string, { price: number; reportedDate: string }>();
+  for (const s of AI_HW_SPOTS) {
+    const priceRe = new RegExp(
+      `>${escapeRegExp(s.code)}</span>\\s*<span class="text-foreground">\\$([\\d,]+\\.\\d{2})</span>`,
+    );
+    const m = priceRe.exec(html);
+    if (!m) continue;
+    const price = Number((m[1] ?? "").replace(/,/g, ""));
+    if (!Number.isFinite(price) || price < s.min || price > s.max) continue;
+    const dateRe = new RegExp(
+      `>${escapeRegExp(s.code)}</div>[\\s\\S]{0,4000}?reported<!-- --> · <!-- -->(\\d{4}-\\d{2}-\\d{2})`,
+    );
+    const dm = dateRe.exec(html);
+    out.set(s.key, { price, reportedDate: dm?.[1] ?? "" });
+  }
+  return out;
+}
+
+/** One NowInStock.net model page → the cheapest In-Stock offer with a
+ *  listed price (see the caliber note above). Null when the page
+ *  carries no usable offer — the caller stores nothing that day. */
+async function fetchGpuStreetPrice(
+  gpu: (typeof AI_HW_GPUS)[number],
+): Promise<{ price: number; offers: number; retailer: string } | null> {
+  const res = await fetch(`https://www.nowinstock.net/computers/videocards/nvidia/${gpu.slug}/`, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) throw new Error(`NowInStock ${gpu.slug} HTTP ${res.status}`);
+  const html = await res.text();
+  const rows = html.match(/<tr id="tr\d+"[\s\S]*?<\/tr>/g) ?? [];
+  let best: { price: number; retailer: string } | null = null;
+  let offers = 0;
+  for (const row of rows) {
+    if (!row.includes("stockStatusIn")) continue;
+    const pm = /trackerPrice[^>]*>\$([\d,]+\.\d{2})/.exec(row);
+    if (!pm) continue;
+    const price = Number((pm[1] ?? "").replace(/,/g, ""));
+    if (!Number.isFinite(price) || price < gpu.min || price > gpu.max) continue;
+    offers++;
+    if (!best || price < best.price) {
+      const nm = /<td[^>]*>\s*<a[^>]*>([\s\S]*?)<\/a>/.exec(row);
+      const nameText = nm ? (nm[1] ?? "").replace(/<[^>]+>/g, "").trim() : "";
+      const retailer = nameText.includes(" : ") ? (nameText.split(" : ").pop() ?? "").trim() : "";
+      best = { price, retailer };
+    }
+  }
+  return best ? { price: best.price, offers, retailer: best.retailer } : null;
+}
+
+const decodeEntities = (s: string): string =>
+  s
+    .replace(/&#(\d+);/g, (_m, n: string) => String.fromCodePoint(Number(n)))
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .trim();
+
+/** Storage / spot-market headlines from TrendForce's official news
+ *  listing (pages 1–4, newest first). Each list item pairs a calendar
+ *  date with its title link; titles are kept verbatim (English) and
+ *  filtered by memory / spot keywords. Returns [] when every page
+ *  fails to parse — the caller keeps the stored rows. */
+const AI_NEWS_KEYWORDS = /DRAM|NAND|HBM|GDDR|DDR\d|Memory|memory|SSD|Flash|flash|Spot Price|spot price/;
+async function fetchTrendForceNews(): Promise<{ title: string; url: string; date: string }[]> {
+  const out: { title: string; url: string; date: string }[] = [];
+  const seen = new Set<string>();
+  let pagesOk = 0;
+  for (const page of [1, 2, 3, 4]) {
+    const url = page === 1 ? "https://www.trendforce.com/news/" : `https://www.trendforce.com/news/page/${page}/`;
+    try {
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        },
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const html = await res.text();
+      const itemRe =
+        /fa-calendar"><\/i>\s*(20\d{2}-\d{2}-\d{2})[\s\S]{0,600}?<a class="title-link" href="(https:\/\/www\.trendforce\.com\/news\/[^"]+)"><strong>([\s\S]*?)<\/strong><\/a>/g;
+      let m: RegExpExecArray | null;
+      let pageItems = 0;
+      while ((m = itemRe.exec(html)) !== null) {
+        pageItems++;
+        const itemUrl = m[2] ?? "";
+        const title = decodeEntities((m[3] ?? "").replace(/<[^>]+>/g, ""));
+        if (!itemUrl || !title || seen.has(itemUrl)) continue;
+        if (!AI_NEWS_KEYWORDS.test(title)) continue;
+        seen.add(itemUrl);
+        out.push({ title, url: itemUrl, date: m[1] ?? "" });
+      }
+      if (pageItems > 0) pagesOk++;
+    } catch {
+      // One listing page failing costs only that page's items.
+    }
+  }
+  if (pagesOk === 0) throw new Error("TrendForce 新闻列表 4 页均未解析到条目（页面结构可能已变）");
+  return out;
+}
+
+async function stageAiHardware(ctx: Ctx, rebuild: boolean): Promise<StageResult> {
+  void rebuild; // every series here accumulates daily snapshots; there is no history window to rebuild
+  const errors: string[] = [];
+  let fetched = 0;
+  const coverage = await seriesCoverage(ctx);
+  const counts: StoreCounts[] = [];
+  const today = beijingToday();
+  // Spot: one board fetch; one snapshot point per series per Beijing
+  // day (same-day re-refresh replaces the point via the counted store).
+  try {
+    const board = await fetchMemorySpotBoard();
+    const meta: Record<string, { reportedDate: string }> = {};
+    for (const s of AI_HW_SPOTS) {
+      const hit = board.get(s.key);
+      if (!hit) {
+        errors.push(`${s.name}: 现货板未解析到价格（页面结构可能已变），旧数据保留`);
+        continue;
+      }
+      counts.push(await storeSeriesCounted(ctx, s.key, [{ date: today, value: hit.price, volume: null }], coverage.get(s.key)));
+      meta[s.key] = { reportedDate: hit.reportedDate };
+      fetched++;
+    }
+    if (Object.keys(meta).length > 0) {
+      // Merge into the stored meta KV so a partially parsed round never
+      // erases another series' quote date.
+      let prevMeta: Record<string, { reportedDate: string }> = {};
+      try {
+        const db = ctx.db<typeof schema>();
+        const rows = await db.select().from(schema.chronicleData).where(eq(schema.chronicleData.key, "_aihw_spot_meta"));
+        const raw = rows[0]?.payload;
+        if (raw) prevMeta = JSON.parse(raw) as Record<string, { reportedDate: string }>;
+      } catch {
+        prevMeta = {};
+      }
+      await upsertChronicleRow(ctx, "_aihw_spot_meta", JSON.stringify({ ...prevMeta, ...meta }));
+    }
+  } catch (e) {
+    errors.push(`存储现货（memoryindex.io）: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  // GPU street prices: one tracker page per model, failure-isolated.
+  // A model with no in-stock priced offer stores no point today.
+  const gpuMeta: Record<string, { offers: number; retailer: string }> = {};
+  await Promise.all(
+    AI_HW_GPUS.map(async (gpu) => {
+      try {
+        const hit = await fetchGpuStreetPrice(gpu);
+        if (!hit) {
+          errors.push(`${gpu.name}: 本次未取到在售报价（全部缺货或页面结构变化），旧数据保留`);
+          return;
+        }
+        counts.push(await storeSeriesCounted(ctx, gpu.key, [{ date: today, value: hit.price, volume: null }], coverage.get(gpu.key)));
+        gpuMeta[gpu.key] = { offers: hit.offers, retailer: hit.retailer };
+        fetched++;
+      } catch (e) {
+        errors.push(`${gpu.name} 街价: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }),
+  );
+  if (Object.keys(gpuMeta).length > 0) {
+    let prevGpuMeta: Record<string, { offers: number; retailer: string }> = {};
+    try {
+      const db = ctx.db<typeof schema>();
+      const rows = await db.select().from(schema.chronicleData).where(eq(schema.chronicleData.key, "_aihw_gpu_meta"));
+      const raw = rows[0]?.payload;
+      if (raw) prevGpuMeta = JSON.parse(raw) as Record<string, { offers: number; retailer: string }>;
+    } catch {
+      prevGpuMeta = {};
+    }
+    await upsertChronicleRow(ctx, "_aihw_gpu_meta", JSON.stringify({ ...prevGpuMeta, ...gpuMeta }));
+  }
+  // News: TrendForce listing → ai_news (dedupe by URL, prune to the
+  // newest 60 by published date). A failed pull keeps the stored rows.
+  let newsNote = "";
+  try {
+    const items = await fetchTrendForceNews();
+    if (items.length > 0) {
+      const db = ctx.db<typeof schema>();
+      const fetchedAt = new Date().toISOString();
+      for (const it of items) {
+        await db
+          .insert(schema.aiNews)
+          .values({ url: it.url, title: it.title, source: "TrendForce", publishedDate: it.date, fetchedAt })
+          .onConflictDoNothing({ target: schema.aiNews.url });
+      }
+      const allIds = await db.select({ id: schema.aiNews.id }).from(schema.aiNews);
+      const keep = await db
+        .select({ id: schema.aiNews.id })
+        .from(schema.aiNews)
+        .orderBy(desc(schema.aiNews.publishedDate), desc(schema.aiNews.id))
+        .limit(60);
+      const keepSet = new Set(keep.map((r) => r.id));
+      const dropIds = allIds.map((r) => r.id).filter((id) => !keepSet.has(id));
+      if (dropIds.length > 0) {
+        await db.delete(schema.aiNews).where(inArray(schema.aiNews.id, dropIds));
+      }
+      newsNote = `存储/现货新闻 ${items.length} 条（TrendForce）`;
+    } else {
+      errors.push("现货新闻: TrendForce 列表本次没有存储/现货相关条目，旧新闻保留");
+    }
+  } catch (e) {
+    errors.push(`现货新闻（TrendForce）: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const base = countsSummary("AI 硬件现货序列", sumCounts(counts), fetched, false);
+  return { fetched, errors, summary: newsNote ? `${base}；${newsNote}` : base };
+}
+
 // D-Lock: at most one refresh run at a time, server-wide. The client
 // already pools 5 stage calls per run (runStagePool), so the guard must
 // tell "same run" from "another run": callers pass runId + runTotal;
@@ -8060,6 +8468,7 @@ const STAGE_RUNNERS: Record<string, (ctx: Ctx, rebuild: boolean) => Promise<Stag
   "cloud-rut": (ctx, rebuild) => stageCloud(ctx, "rut", rebuild),
   "cloud-cn": (ctx, rebuild) => stageCloud(ctx, "cn", rebuild),
   chronicle: (ctx, rebuild) => stageChronicle(ctx, rebuild),
+  "ai-hardware": stageAiHardware,
 };
 
 // Display names for stage ids (mirrors the client's REFRESH_STAGES
@@ -8082,6 +8491,7 @@ const STAGE_LABELS: Record<string, string> = {
   "cloud-rut": "云图 · 罗素 2000",
   "cloud-cn": "云图 · A股",
   chronicle: "美股编年史",
+  "ai-hardware": "AI 硬件现货价格",
   all: "全量刷新",
   legacy: "历史刷新",
 };
@@ -8153,7 +8563,7 @@ const seedCdbGovResponse = z.object({
 
 async function dataVersion(ctx: Ctx): Promise<string> {
   const db = ctx.db<typeof schema>();
-  const [rl, sp, fp, ce, cs, ch, fa] = await Promise.all([
+  const [rl, sp, fp, ce, cs, ch, fa, an] = await Promise.all([
     db.select({ m: max(schema.refreshLog.id) }).from(schema.refreshLog),
     db.select({ c: count(), m: max(schema.seriesPoints.id) }).from(schema.seriesPoints),
     db.select({ m: max(schema.forwardPe.id) }).from(schema.forwardPe),
@@ -8161,6 +8571,7 @@ async function dataVersion(ctx: Ctx): Promise<string> {
     db.select({ c: count(), m: max(schema.cloudStocks.id) }).from(schema.cloudStocks),
     db.select({ c: count(), m: max(schema.chronicleData.updatedAt) }).from(schema.chronicleData),
     db.select({ c: count(), m: max(schema.fibAnchors.updatedAt) }).from(schema.fibAnchors),
+    db.select({ c: count(), m: max(schema.aiNews.id) }).from(schema.aiNews),
   ]);
   const parts: (string | number | null | undefined)[] = [
     rl[0]?.m,
@@ -8175,6 +8586,8 @@ async function dataVersion(ctx: Ctx): Promise<string> {
     ch[0]?.m,
     fa[0]?.c,
     fa[0]?.m,
+    an[0]?.c,
+    an[0]?.m,
   ];
   return parts.map((p) => (p == null ? "" : String(p))).join("|");
 }
@@ -8263,16 +8676,16 @@ export const Actions = {
   }),
 
   refreshStage: defineAction({
-    description: "分块刷新一个数据模块（行情/收益率/资金面/两融成交/融资余额/恐惧与贪婪/华尔街/日历/云图/编年史）：只拉这一块、拉到就入库，失败保留旧数据并记录原因。历史序列默认增量刷新（只拉尾巴并回报追加/跳过点数），rebuild=true 时全量重建该分块。前端点刷新时逐块调用，逐块渲染。",
+    description: "分块刷新一个数据模块（行情/收益率/资金面/两融成交/融资余额/恐惧与贪婪/华尔街/日历/云图/编年史/AI 硬件现货）：只拉这一块、拉到就入库，失败保留旧数据并记录原因。历史序列默认增量刷新（只拉尾巴并回报追加/跳过点数），rebuild=true 时全量重建该分块。前端点刷新时逐块调用，逐块渲染。",
     privileged: [privileged.fetchFinraMargin],
     request: z.object({
-      stage: z.enum(["prices", "yields", "extras", "margin", "feargreed", "pcr", "pe", "money", "wallst", "calendar", "cloud-us", "cloud-ndx", "cloud-dow", "cloud-rut", "cloud-cn", "chronicle"]),
+      stage: z.enum(["prices", "yields", "extras", "margin", "feargreed", "pcr", "pe", "money", "wallst", "calendar", "cloud-us", "cloud-ndx", "cloud-dow", "cloud-rut", "cloud-cn", "chronicle", "ai-hardware"]),
       rebuild: z.boolean().optional(),
       // D-Lock: identifies the refresh run this stage belongs to, so the
       // server can tell this run's 5 pooled lanes from another run.
       // Callers that omit it get a fresh single-stage run (total 1).
       runId: z.string().max(64).optional(),
-      runTotal: z.number().int().min(1).max(16).optional(),
+      runTotal: z.number().int().min(1).max(24).optional(),
     }),
     response: z.object({
       ok: z.boolean(),
@@ -8676,6 +9089,72 @@ export const Actions = {
         ? { date: realTail.date, value: realTail.value, points: realPts?.length ?? 0 }
         : null;
 
+      // AI 硬件现货 (v124): read-only over stored points — the
+      // ai-hardware stage is the only writer of the spot / GPU series
+      // and the ai_news table.
+      let aiSpotMeta: Record<string, { reportedDate?: string }> = {};
+      let aiGpuMeta: Record<string, { offers?: number; retailer?: string }> = {};
+      try {
+        const metaRows = await db
+          .select()
+          .from(schema.chronicleData)
+          .where(inArray(schema.chronicleData.key, ["_aihw_spot_meta", "_aihw_gpu_meta"]));
+        for (const r of metaRows) {
+          if (r.key === "_aihw_spot_meta") aiSpotMeta = JSON.parse(r.payload) as Record<string, { reportedDate?: string }>;
+          if (r.key === "_aihw_gpu_meta") aiGpuMeta = JSON.parse(r.payload) as Record<string, { offers?: number; retailer?: string }>;
+        }
+      } catch {
+        aiSpotMeta = {};
+        aiGpuMeta = {};
+      }
+      const aiChangePct = (pts: Pt[] | undefined): number | null => {
+        if (!pts || pts.length < 2) return null;
+        const last = pts[pts.length - 1];
+        const prev = pts[pts.length - 2];
+        if (!last || !prev || !(prev.value > 0)) return null;
+        return Math.round(((last.value / prev.value) - 1) * 10000) / 100;
+      };
+      const aiNewsRows = await db
+        .select()
+        .from(schema.aiNews)
+        .orderBy(desc(schema.aiNews.publishedDate), desc(schema.aiNews.id))
+        .limit(12);
+      const aiHardware: DashboardPayload["aiHardware"] = {
+        spots: AI_HW_SPOTS.map((s) => {
+          const pts = all.get(s.key) ?? [];
+          const last = pts[pts.length - 1];
+          return {
+            key: s.key,
+            name: s.name,
+            spec: s.spec,
+            unit: s.unit,
+            value: last ? last.value : null,
+            date: last ? last.date : "",
+            reportedDate: aiSpotMeta[s.key]?.reportedDate ?? "",
+            changePct: aiChangePct(pts),
+            points: pts.length,
+          };
+        }),
+        gpus: AI_HW_GPUS.map((g) => {
+          const pts = all.get(g.key) ?? [];
+          const last = pts[pts.length - 1];
+          return {
+            key: g.key,
+            name: g.name,
+            spec: g.spec,
+            unit: "美元",
+            value: last ? last.value : null,
+            date: last ? last.date : "",
+            changePct: aiChangePct(pts),
+            points: pts.length,
+            offers: aiGpuMeta[g.key]?.offers ?? null,
+            retailer: aiGpuMeta[g.key]?.retailer ?? "",
+          };
+        }),
+        hbm: AI_HW_HBM_REFS,
+        news: aiNewsRows.map((r) => ({ title: r.title, url: r.url, date: r.publishedDate, source: r.source })),
+      };
+
       if (all.size === 0) {
         const emptyResult: DashboardPayload = {
           hasData: false,
@@ -8703,6 +9182,7 @@ export const Actions = {
           marginUs: null,
           fearGreed: null,
           bottomTop: null,
+          aiHardware,
           style: [],
           seasonality: [],
           breadth: [],
@@ -11440,6 +11920,7 @@ export const Actions = {
         marginUs,
         fearGreed,
         bottomTop,
+        aiHardware,
         style,
         seasonality,
         breadth,

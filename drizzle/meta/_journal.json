@@ -85,6 +85,13 @@
       "when": 1795207998464,
       "tag": "0012_add_server_secrets_table",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1795363445683,
+      "tag": "0013_add_ai_hardware_news_table",
+      "breakpoints": true
     }
   ]
 }
