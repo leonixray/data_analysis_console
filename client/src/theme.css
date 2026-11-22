@@ -1,0 +1,118 @@
+/* F-P2-7: no external web-font dependency. Serif headings use a pure
+   system font stack (see .font-serif-sc below) so rendering is identical
+   in every network environment and the page issues zero font requests. */
+@import "tailwindcss";
+@import "tailwindcss-safe-area";
+
+@theme {
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+  --text-lg: 18px;
+  --text-lg--line-height: 28px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 30px;
+  --text-3xl--line-height: 36px;
+  --text-4xl: 36px;
+  --text-4xl--line-height: 40px;
+  --text-5xl: 48px;
+  --text-5xl--line-height: 52px;
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #f6f4ee;
+  --surface: #fffdf8;
+  --surface-2: #efeadd;
+  --text: #16232c;
+  --dim: #6f6a5e;
+  --border: #e3ddcf;
+  --accent: #b03a2e;
+  --radius: 12px;
+  --shadow-card: 0 1px 2px rgb(22 35 44 / 0.05), 0 6px 16px -8px rgb(22 35 44 / 0.12);
+  --space-surface: var(--surface);
+  --space-surface-alt: var(--surface);
+  --space-muted: var(--dim);
+  --space-border: var(--border);
+  --space-accent: var(--accent);
+  --up: #c0392b;
+  --down: #1e7d4f;
+  --gold: #a97e1f;
+  /* F-P2-1 unified selector chips: the UNSELECTED chip is a dark slate
+     chip with light text in BOTH colour modes (the value equals the
+     dark-mode --surface-2, so light mode now matches what dark mode
+     always showed instead of the pale #efeadd). Deliberately NOT
+     overridden in the dark block below — one chip look site-wide.
+     The SELECTED chip is --accent + white text everywhere, including
+     the cloud map's internal option groups. */
+  --chip-bg: #1c2d38;
+  --chip-text: #ece9df;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d151c;
+    --surface: #15222c;
+    --surface-2: #1c2d38;
+    --text: #edf1ee;
+    --dim: #9aa5a0;
+    --border: #27363f;
+    --accent: #e0654f;
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.45), 0 8px 20px -10px rgb(0 0 0 / 0.55);
+    --up: #e0654f;
+    --down: #3fae74;
+    --gold: #d3a94e;
+  }
+}
+
+::selection {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Horizontally scrolling chip rows (module nav) without a visible bar. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Serif display stack for headings and key figures. Locally installed
+   Noto Serif SC / Source Han Serif win when present (no download);
+   otherwise the platform's bundled CJK serif: Songti SC / STSong on
+   Apple devices, SimSun / FangSong on Windows, Noto Serif CJK on
+   Android/Linux. Same stack everywhere — no web font is ever fetched. */
+.font-serif-sc {
+  font-family: "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", "Songti SC", "STSong", "STSongti-SC-Bold", "SimSun", "NSimSun", "FangSong", serif;
+}
+
+/* Phone tap targets: at least 32px tall. */
+@layer base {
+  button, [role="button"], select, summary, input:not([type="checkbox"], [type="radio"]) {
+    min-height: 2rem;
+  }
+  /* Phone touch targets ≥44px (M-P1-2): below the sm breakpoint every
+     tappable control is at least 44px tall — nav chips, window pills,
+     refresh, period switchers, selectors, in-card buttons. Desktop
+     (≥640px) keeps the compact 32px sizing above. The cloud treemap's
+     absolutely-positioned tiles and group header strips are exempt:
+     their geometry is the chart itself (percentage heights, min-h-0),
+     so the rule skips .absolute elements. */
+  @media (max-width: 639px) {
+    button:not(.absolute), [role="button"]:not(.absolute), select, summary, input:not([type="checkbox"], [type="radio"]) {
+      min-height: 44px;
+    }
+  }
+  /* Trading-terminal numerals: every digit the same width, so prices,
+     yields and table columns line up vertically everywhere. */
+  body {
+    font-variant-numeric: tabular-nums;
+  }
+}

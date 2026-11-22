@@ -1,0 +1,22 @@
+# 密钥与本地数据（绝不要提交）
+.env
+config/holdings.json
+*.db
+*.db-shm
+*.db-wal
+
+# 依赖与构建产物
+node_modules/
+client/dist/
+client/dist-cvm/
+server/dist/
+server/.generated/
+.bun-cache/
+.space-build/
+.space-build-cvm/
+*.tsbuildinfo
+
+# 系统与编辑器
+.DS_Store
+.idea/
+.vscode/
