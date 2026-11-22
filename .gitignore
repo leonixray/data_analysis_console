@@ -1,16 +1,30 @@
-# 密钥与本地数据（绝不要提交）
+# 密钥、个人数据与内部记录（绝不要提交）
+# —— 这是公开仓库的底线：下面这些一旦进仓库就是泄漏。
+# 同步推送脚本（push_public_copy.py）同样按这份清单过滤。
 .env
+.env.local
 config/holdings.json
 *.db
 *.db-shm
 *.db-wal
+
+# 个人信息与内部施工记录（永不进公开仓库）
+DATA-PLAN.md
+docs/DATA-PLAN.md
+.harness/
+audits/
+hidden_files/
+**/hidden_files/
+*.pem
+*.key
+id_rsa*
+credentials*.json
 
 # 依赖与构建产物
 node_modules/
 client/dist/
 client/dist-cvm/
 server/dist/
-server/.generated/
 .bun-cache/
 .space-build/
 .space-build-cvm/
