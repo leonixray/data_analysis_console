@@ -27,7 +27,7 @@
 
 - **数据先拉取存入数据库，页面只读库、不直连外部源**。刷新路径是纯程序：拉公开 JSON 接口 → 存库 → 用算术算指标，**不调用任何模型**，数据源结构不变就不花 token。
 - 动态数据两种刷新方式：定时任务（`space.json` 里的 `managedCronJobs`，每小时一次）或页面右上角「刷新数据」手动刷新。刷新按分块做，失败隔离、可只重试失败的块；缺数据的卡片诚实显示原因，不会静默过期。
-- 前瞻 PE 部分没有稳定的公开接口来源：标普 500 来自 FactSet Earnings Insight（每周 PDF）、纳指 100 来自 Siblis 月度页，手工抄录入库（见 `forward_pe` 表与 `docs/DATA-PLAN.md` v48）。
+- 前瞻 PE 部分没有稳定的公开接口来源：标普 500 来自 FactSet Earnings Insight（每周 PDF）、纳指 100 来自 Siblis 月度页，手工抄录入库（见 `forward_pe` 表）。
 
 ## 快速开始
 
