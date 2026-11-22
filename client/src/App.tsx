@@ -57,7 +57,15 @@ function useWindowLabel(): string {
 // webview, quota) fall back silently to a plain network read.
 // ---------------------------------------------------------------------------
 
+// Seed schema version. v1 seeds predate the aiHardware block (v124,
+// 2026-11-22): the overview dereferences data.aiHardware.spots
+// unguarded, so a v1 seed crashed the first render into a permanent
+// white screen (no error boundary, and the dead tree never rewrote
+// the seed). v2 validation therefore also requires the aiHardware
+// arrays; any older or partial seed is dropped and the page falls
+// back to a plain network load, which self-heals the cache.
 const DASH_SEED_KEY = "dash-seed-v1";
+const DASH_SEED_VERSION = 2;
 type DashSeed = { windowDays: number; at: number; data: Dashboard };
 
 function readDashSeed(): DashSeed | null {
@@ -66,8 +74,10 @@ function readDashSeed(): DashSeed | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { v?: number; windowDays?: number; at?: number; data?: Dashboard };
     const d = parsed.data;
-    if (parsed.v !== 1 || typeof parsed.windowDays !== "number" || typeof parsed.at !== "number" || !d) return null;
+    if (parsed.v !== DASH_SEED_VERSION || typeof parsed.windowDays !== "number" || typeof parsed.at !== "number" || !d) return null;
     if (typeof d.hasData !== "boolean" || !Array.isArray(d.instruments) || !Array.isArray(d.hero) || !Array.isArray(d.stages)) return null;
+    const ai = d.aiHardware;
+    if (!ai || !Array.isArray(ai.spots) || !Array.isArray(ai.gpus) || !Array.isArray(ai.hbm) || !Array.isArray(ai.news)) return null;
     return { windowDays: parsed.windowDays, at: parsed.at, data: d };
   } catch {
     return null;
@@ -76,7 +86,7 @@ function readDashSeed(): DashSeed | null {
 
 function writeDashSeed(seed: DashSeed): void {
   try {
-    window.localStorage.setItem(DASH_SEED_KEY, JSON.stringify({ v: 1, ...seed }));
+    window.localStorage.setItem(DASH_SEED_KEY, JSON.stringify({ v: DASH_SEED_VERSION, ...seed }));
   } catch {
     // Storage unavailable or over quota: entry just uses the network.
   }
@@ -3221,6 +3231,16 @@ function AiHbmCard({ h }: { h: AiHw["hbm"][number] }) {
 
 function AiHardwareView({ data }: { data: Dashboard }) {
   const ai = data.aiHardware;
+  // A dashboard payload without the aiHardware block (e.g. a stale
+  // local seed) must degrade to an empty state, never crash the page.
+  if (!ai || !Array.isArray(ai.spots) || !Array.isArray(ai.gpus) || !Array.isArray(ai.hbm) || !Array.isArray(ai.news)) {
+    return (
+      <section>
+        <SectionHead title="AI 硬件现货价格" />
+        <p className="mt-3 text-sm text-[var(--dim)]">暂无数据，点右上角「刷新数据」后即可查看。</p>
+      </section>
+    );
+  }
   return (
     <section>
       <SectionHead title="AI 硬件现货价格" />
@@ -5855,7 +5875,7 @@ export function App() {
           id: "aihw",
           title: "AI硬件现货价格",
           stat: (() => {
-            const d5 = data.aiHardware.spots.find((s) => s.key === "dram_ddr5_16g");
+            const d5 = data.aiHardware?.spots?.find((s) => s.key === "dram_ddr5_16g");
             return d5?.value != null
               ? `DDR5 16Gb 现货 $${fmt(d5.value, 2)}（${d5.reportedDate || d5.date}）`
               : `现货积累中 ${d5?.points ?? 0}/8`;
