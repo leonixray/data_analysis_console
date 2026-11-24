@@ -8594,6 +8594,29 @@ async function dataVersion(ctx: Ctx): Promise<string> {
 
 type DashboardPayload = z.infer<typeof dashboardResponse>;
 const dashMemo = new Map<number, { version: string; value: DashboardPayload }>();
+
+// In-flight dedup for getDashboard (2026-11-23 probe): two callers
+// arriving while a build for the same window + version is running share
+// the one build instead of each paying a full ~6s recompute (observed
+// 6.0s + 2.8s for overlapping cold calls). Waiters are time-bounded
+// (20s) so a builder that throws can't strand them; on timeout the
+// waiter falls through and starts its own build, overwriting the stale
+// entry.
+type DashInflight = { version: string; promise: Promise<void>; resolve: () => void };
+const dashInflight = new Map<number, DashInflight>();
+
+// Records the memo and wakes any waiters sharing this build. Called at
+// the two dashMemo.set sites (empty + full result); only resolves when
+// the entry still belongs to this build.
+function commitDashboardMemo(windowDays: number, version: string, value: DashboardPayload): DashboardPayload {
+  dashMemo.set(windowDays, { version, value });
+  const inflight = dashInflight.get(windowDays);
+  if (inflight && inflight.version === version) {
+    dashInflight.delete(windowDays);
+    inflight.resolve();
+  }
+  return value;
+}
 type ChroniclePayload = {
   hasData: boolean;
   generatedAt: string;
@@ -9027,6 +9050,18 @@ export const Actions = {
       const version = await dataVersion(ctx);
       const memoHit = dashMemo.get(windowDays);
       if (memoHit && memoHit.version === version) return memoHit.value;
+      const inflight = dashInflight.get(windowDays);
+      if (inflight && inflight.version === version) {
+        await Promise.race([
+          inflight.promise,
+          new Promise((r) => setTimeout(r, 20_000)),
+        ]);
+        const hitAfterWait = dashMemo.get(windowDays);
+        if (hitAfterWait && hitAfterWait.version === version) return hitAfterWait.value;
+      }
+      let resolveBuild!: () => void;
+      const buildPromise = new Promise<void>((r) => { resolveBuild = r; });
+      dashInflight.set(windowDays, { version, promise: buildPromise, resolve: resolveBuild });
       const db = ctx.db<typeof schema>();
       const logs = await db
         .select()
@@ -9189,8 +9224,7 @@ export const Actions = {
           portfolio: { corrAssets: [], correlations: [], sims: [] },
           calendar: { events: [] },
         };
-        dashMemo.set(windowDays, { version, value: emptyResult });
-        return emptyResult;
+        return commitDashboardMemo(windowDays, version, emptyResult);
       }
 
       // Fibonacci anchors (stored by the prices stage; levels are
@@ -11927,8 +11961,7 @@ export const Actions = {
         portfolio,
         calendar,
       };
-      dashMemo.set(windowDays, { version, value: result });
-      return result;
+      return commitDashboardMemo(windowDays, version, result);
     },
   }),
 } satisfies ActionsModule;
